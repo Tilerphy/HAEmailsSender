@@ -1,0 +1,7 @@
+﻿################################################################################
+# This .gitignore file was automatically created by Microsoft(R) Visual Studio.
+################################################################################
+
+/HalfAutoEmailsSender/obj/Debug
+/HalfAutoEmailsSender/bin/Debug
+/packages
