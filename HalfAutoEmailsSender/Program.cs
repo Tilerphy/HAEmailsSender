@@ -15,14 +15,19 @@ namespace HalfAutoEmailsSender
 {
     class Program
     {
-        public static List<EmailItem> AllEmails = new List<EmailItem>();
         public static readonly log4net.ILog logger = log4net.LogManager.GetLogger("loginfo");
         public static BlockingCollection<SmtpClient> SmtpClients = new BlockingCollection<SmtpClient>();
-        
+        public static Dictionary<string, string> TemplatePlaceHolders = new Dictionary<string, string>();
         static void Main(string[] args)
         {
 
-
+            foreach (string key in ConfigurationManager.AppSettings.Keys) 
+            {
+                if (key.StartsWith("::") && key.EndsWith("::"))
+                {
+                    TemplatePlaceHolders.Add(key, ConfigurationManager.AppSettings[key]);   
+                }
+            }
             
             Console.Write("Drag one the Emails file:");
             ProcessFile(Console.ReadLine());
@@ -74,20 +79,13 @@ namespace HalfAutoEmailsSender
             try
             {
                 string culture = ConfigurationManager.AppSettings["DefaultCulture"];
-                int fromIndex = int.Parse(ConfigurationManager.AppSettings["From"]) - 1;
-                int fromNameIndex = int.Parse(ConfigurationManager.AppSettings["FromName"]) - 1;
-                int isHtmlBodyIndex = int.Parse(ConfigurationManager.AppSettings["IsHtmlBody"]) - 1;
-                int toIndex = int.Parse(ConfigurationManager.AppSettings["To"]) - 1;
-                int subjectIndex = int.Parse(ConfigurationManager.AppSettings["Subject"]) - 1;
-                int bodyIndex = int.Parse(ConfigurationManager.AppSettings["MailBody"]) - 1;
-                int attachmentPathIndex = int.Parse(ConfigurationManager.AppSettings["AttachmentPath"]) - 1;
-                bool ingoreFileHeader = bool.Parse(ConfigurationManager.AppSettings["IgnoreFileHeader"]);
-                int concurrentNumber = int.Parse(ConfigurationManager.AppSettings["ConcurrentNumber"]);
-                ThreadPool.SetMaxThreads(concurrentNumber, concurrentNumber);
-                for (int i = 0; i < concurrentNumber; i++) 
-                {
-                    SmtpClients.Add(CreateNewSMTPClient());
-                }
+                string fromIndex = ConfigurationManager.AppSettings["From"];
+                string fromNameIndex = ConfigurationManager.AppSettings["FromName"];
+                string isHtmlBodyIndex = ConfigurationManager.AppSettings["IsHtmlBody"];
+                string toIndex = ConfigurationManager.AppSettings["To"];
+                string subjectIndex = ConfigurationManager.AppSettings["Subject"];
+                string bodyIndex = ConfigurationManager.AppSettings["MailBody"];
+                string attachmentPathIndex = ConfigurationManager.AppSettings["AttachmentPath"];
                 logger.Info(string.Format("Start to process file from {0}", fullPath));
                 CsvConfiguration config = new CsvConfiguration(string.IsNullOrEmpty(culture) ? CultureInfo.CurrentCulture
                     : CultureInfo.GetCultureInfo(culture));
@@ -99,24 +97,30 @@ namespace HalfAutoEmailsSender
                     {
 
                         counter++;
-                        if (ingoreFileHeader && counter == 1)
-                        {
-                            continue;
-                        }
                         EmailItem item
                              = new EmailItem();
                         item.RootFile = fullPath;
                         item.PostionInFile = counter;
-                        item.From = fromIndex == -1 ? item.From : reader.GetField(fromIndex);
-                        item.FromName = fromNameIndex == -1 ? item.FromName : reader.GetField(fromNameIndex);
-                        item.IsHtmlBody = isHtmlBodyIndex == -1 ? item.IsHtmlBody : bool.Parse(reader.GetField(isHtmlBodyIndex));
+                        item.From = string.IsNullOrEmpty(fromIndex) ? item.From : reader.GetField(fromIndex);
+                        item.FromName = string.IsNullOrEmpty(fromNameIndex) ? item.FromName : reader.GetField(fromNameIndex);
+                        item.IsHtmlBody = string.IsNullOrEmpty(isHtmlBodyIndex) ? item.IsHtmlBody : bool.Parse(reader.GetField(isHtmlBodyIndex));
                         item.To = reader.GetField(toIndex);
                         item.Subject = reader.GetField(subjectIndex);
-                        item.MailBody = reader.GetField(bodyIndex);
-                        item.AttachmentPath = attachmentPathIndex == -1 ? null : reader.GetField(attachmentPathIndex);
-                        
-                        AllEmails.Add(item);
-                        ThreadPool.QueueUserWorkItem(new WaitCallback(PricessItemJob), item);
+                        if (bodyIndex.StartsWith("~~"))
+                        {
+                            item.MailBody = File.ReadAllText(reader.GetField(bodyIndex));
+                            foreach (string key in TemplatePlaceHolders.Keys) 
+                            {
+                                item.MailBody = item.MailBody.Replace(key, reader.GetField(key));
+                            }
+                        }
+                        else
+                        {
+                            item.MailBody = reader.GetField(bodyIndex);
+                        }
+
+                        item.AttachmentPath = string.IsNullOrEmpty(attachmentPathIndex) ? null : reader.GetField(attachmentPathIndex);
+                        ProcessItemJob(item);
                     }
                 }
             }
@@ -127,18 +131,16 @@ namespace HalfAutoEmailsSender
             }
             
         }
-        private static void PricessItemJob(object emailItem) 
-        {
-            ProcessItemJob(emailItem as EmailItem);
-        }
+        public static SmtpClient cl = CreateNewSMTPClient();
         /// <summary>
         /// 
         /// </summary>
         /// <param name="objItems">List of EmailItem</param>
+        /// 
         private static void ProcessItemJob(EmailItem emailItem) 
         {
             Console.WriteLine("{0}", emailItem.PostionInFile);
-            SmtpClient client =  SmtpClients.Take();
+            SmtpClient client = cl;// SmtpClients.Take();
             
             SendMail(emailItem, client);
             SmtpClients.Add(client);
@@ -201,15 +203,19 @@ namespace HalfAutoEmailsSender
         public string To { get; set; }
         public string Subject { get; set; }
         public string MailBody { get; set; }
+
         public string AttachmentPath { get; set; }
         public string ProcceMessage { get; set; }
         public string ProcceType { get; set; }
+
+        public Dictionary<string, string> Placeholders { set; get; }
         public EmailItem() 
         {
             if (reportlock == null) 
             {
                 reportlock = new object();
             }
+            this.Placeholders = new Dictionary<string, string>();
         }
         public void PresistentReport() 
         {
