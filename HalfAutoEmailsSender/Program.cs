@@ -13,13 +13,37 @@ using System.Threading;
 using System.Threading.Tasks;
 namespace HalfAutoEmailsSender
 {
+
+    public class Logger 
+    {
+        public string LoggerName { get; set; }
+        public Logger(string loggerName) 
+        {
+            this.LoggerName = loggerName;
+        }
+        public void Log(string format, params object[] args) 
+        {
+            Console.WriteLine(string.Format("{2} {0} ===> {1}",
+                    this.LoggerName,
+                    string.Format(format, args),
+                    DateTime.Now.ToLocalTime()));
+        }
+    }
     class Program
     {
-        public static readonly log4net.ILog logger = log4net.LogManager.GetLogger("loginfo");
+        public static Logger logger { get; set; }
+        public static SmtpClient cl { get; set; }
         public static BlockingCollection<SmtpClient> SmtpClients = new BlockingCollection<SmtpClient>();
         public static Dictionary<string, string> TemplatePlaceHolders = new Dictionary<string, string>();
         static void Main(string[] args)
         {
+            string processName = new FileInfo(args[0]).Name;
+            logger = new Logger(processName);
+            cl = CreateNewSMTPClient();
+            if (!Directory.Exists("reports")) 
+            {
+                Directory.CreateDirectory("reports");
+            }
             CsvConfiguration cc = new CsvConfiguration(CultureInfo.GetCultureInfo("zh-CN"));
             CsvReader reader = new CsvReader(new StringReader("1,2,3,4,5,\"ab\"\"cd\",xx"),cc);
             reader.Read();
@@ -36,11 +60,12 @@ namespace HalfAutoEmailsSender
             try
             {
                 File.Delete(args[0]);
+                Console.WriteLine("{0} finished.", processName);
             }
             catch (Exception e) 
             {
                 Console.WriteLine("Failed to delete email files, please deleted it manually.");
-                logger.Error("Failed to delete email files, please deleted it manually.", e);
+                logger.Log("Failed to delete email files, please deleted it manually.", e);
             }
 
         }
@@ -49,8 +74,8 @@ namespace HalfAutoEmailsSender
         {
             try
             {
-                logger.Info("Start to configure SMTP client.");
-                logger.Info(string.Format("SMTP:{3}@{0}:{1} {2} SSL",
+                logger.Log("Start to configure SMTP client.");
+                logger.Log(string.Format("SMTP:{3}@{0}:{1} {2} SSL",
                     ConfigurationManager.AppSettings["SMTPHost"],
                     ConfigurationManager.AppSettings["SMTPPort"],
                     !string.IsNullOrEmpty(ConfigurationManager.AppSettings["SMTPEnableSsl"]) &&
@@ -77,11 +102,12 @@ namespace HalfAutoEmailsSender
             }
             catch (Exception e)
             {
-                logger.Error("Failed to configure SMTP client", e);
+                logger.Log("Failed to configure SMTP client", e);
                 return null;
             }
 
         }
+
 
         public static void ProcessFile(string fullPath)
         {
@@ -96,7 +122,9 @@ namespace HalfAutoEmailsSender
                 string subjectIndex = ConfigurationManager.AppSettings["Subject"];
                 string bodyIndex = ConfigurationManager.AppSettings["MailBody"];
                 string attachmentPathIndex = ConfigurationManager.AppSettings["AttachmentPath"];
-                logger.Info(string.Format("Start to process file from {0}", fullPath));
+                string bccIndex = ConfigurationManager.AppSettings["BCC"];
+                string ccIndex = ConfigurationManager.AppSettings["CC"];
+                logger.Log(string.Format("Start to process file from {0}", fullPath));
                 CsvConfiguration config = new CsvConfiguration(string.IsNullOrEmpty(culture) ? CultureInfo.CurrentCulture
                     : CultureInfo.GetCultureInfo(culture));
 
@@ -131,6 +159,37 @@ namespace HalfAutoEmailsSender
                                 item.Subject = reader.GetField(subjectIndex);
                             }
 
+                            if (!string.IsNullOrEmpty(bccIndex)) 
+                            {
+                                if (bccIndex.StartsWith("~"))
+                                {
+                                    item.BCC = ConfigurationManager.AppSettings[bccIndex.TrimStart('~')]
+                                        .Replace('|', ',');
+
+                                }
+                                else 
+                                {
+                                    item.BCC = reader.GetField(bccIndex)
+                                        .Replace('|',',');
+                                }
+                            }
+
+                            if (!string.IsNullOrEmpty(ccIndex))
+                            {
+                                if (ccIndex.StartsWith("~"))
+                                {
+                                    item.CC = ConfigurationManager.AppSettings[ccIndex.TrimStart('~')]
+                                        .Replace('|', ',');
+
+                                }
+                                else
+                                {
+                                    item.BCC = reader.GetField(ccIndex)
+                                        .Replace('|', ',');
+                                }
+                            }
+
+
                             if (bodyIndex.StartsWith("~~"))
                             {
                                 item.MailBody = File.ReadAllText(reader.GetField(bodyIndex.TrimStart('~')));
@@ -156,7 +215,7 @@ namespace HalfAutoEmailsSender
                         {
                             item.ProcceType = "Failed";
                             item.ProcceMessage = e.ToString();
-                            logger.Error("Failed to create an email item {0}", e);
+                            logger.Log("Failed to create an email item {0}", e);
                         }
                         
                     }
@@ -164,12 +223,12 @@ namespace HalfAutoEmailsSender
             }
             catch (Exception e) 
             {
-                logger.Error(string.Format("Fail to process file from {0}", fullPath), e);
+                logger.Log(string.Format("Fail to process file from {0}", fullPath), e);
                 Console.WriteLine("Fail to process file from {0} , please check if the specific file is a supported file. Error details has been saved in logfile.", fullPath);
             }
             
         }
-        public static SmtpClient cl = CreateNewSMTPClient();
+        
         /// <summary>
         /// 
         /// </summary>
@@ -177,7 +236,7 @@ namespace HalfAutoEmailsSender
         /// 
         private static void ProcessItemJob(EmailItem emailItem) 
         {
-            Console.WriteLine("{0}", emailItem.PostionInFile);
+            Console.WriteLine("{0} ===> {1}", new FileInfo(emailItem.RootFile).Name, emailItem.PostionInFile);
             SmtpClient client = cl;// SmtpClients.Take();
             
             SendMail(emailItem, client);
@@ -208,6 +267,14 @@ namespace HalfAutoEmailsSender
                     message.Attachments.Add(data);
                 }
 
+                if (!string.IsNullOrEmpty(email.BCC)) 
+                {
+                    message.Bcc.Add(email.BCC);
+                }
+                if (!string.IsNullOrEmpty(email.CC)) 
+                {
+                    message.CC.Add(email.CC);
+                }
 
                 client.Send(message);
                 email.ProcceType = "Succeeded";
@@ -217,17 +284,16 @@ namespace HalfAutoEmailsSender
             {
                 email.ProcceType = "Failed";
                 email.ProcceMessage = ex.ToString();
-                logger.Error(string.Format("Failed to send email. Email Position: {0}#{1} Subject:{2}", email.RootFile, email.PostionInFile, email.Subject), ex);
+                logger.Log(string.Format("Failed to send email. Email Position: {0}#{1} Subject:{2}", email.RootFile, email.PostionInFile, email.Subject), ex);
             }
         }
 
        
     }
 
+
     public class EmailItem 
     {
-
-        public static readonly log4net.ILog logger = log4net.LogManager.GetLogger("loginfo");
         public static object reportlock = null;
         public string RootFile { get; set; }
         public long PostionInFile { get; set; }
@@ -240,20 +306,20 @@ namespace HalfAutoEmailsSender
 
         public string To { get; set; }
         public string Subject { get; set; }
+        public string BCC { get; set; }
+        public string CC { get; set; }
         public string MailBody { get; set; }
 
         public string AttachmentPath { get; set; }
         public string ProcceMessage { get; set; }
         public string ProcceType { get; set; }
 
-        public Dictionary<string, string> Placeholders { set; get; }
         public EmailItem() 
         {
             if (reportlock == null) 
             {
                 reportlock = new object();
             }
-            this.Placeholders = new Dictionary<string, string>();
         }
         public void PresistentReport() 
         {
@@ -265,7 +331,7 @@ namespace HalfAutoEmailsSender
                     string filename = new FileInfo(this.RootFile).Name;
                     CsvConfiguration config = new CsvConfiguration(string.IsNullOrEmpty(culture) ? CultureInfo.CurrentCulture
                         : CultureInfo.GetCultureInfo(culture));
-                    using (CsvWriter writer = new CsvWriter(new StreamWriter(string.Format("{0}/{1}.report.csv", AppDomain.CurrentDomain.BaseDirectory, filename), true,
+                    using (CsvWriter writer = new CsvWriter(new StreamWriter(string.Format("{0}/reports/{1}.report.csv", AppDomain.CurrentDomain.BaseDirectory,  filename), true,
                         System.Text.Encoding.GetEncoding(this.Encoding))
                          , config))
                     {
@@ -275,13 +341,15 @@ namespace HalfAutoEmailsSender
                         writer.WriteField(this.Subject);
                         writer.WriteField(this.ProcceType);
                         writer.WriteField(this.ProcceMessage);
+                        writer.WriteField(this.CC);
+                        writer.WriteField(this.BCC);
                         writer.WriteField(DateTime.Now.ToLocalTime());
                         writer.NextRecord();
                     }
                 }
                 catch (Exception e) 
                 {
-                    logger.Error(string.Format("Failed to write report. Email Position: {0}#{1} Subject:{2}", this.RootFile, this.PostionInFile, this.Subject), e);
+                    Program.logger.Log(string.Format("Failed to write report. Email Position: {0}#{1} Subject:{2}", this.RootFile, this.PostionInFile, this.Subject), e);
                 }
             }
             
