@@ -20,7 +20,10 @@ namespace HalfAutoEmailsSender
         public static Dictionary<string, string> TemplatePlaceHolders = new Dictionary<string, string>();
         static void Main(string[] args)
         {
-
+            CsvConfiguration cc = new CsvConfiguration(CultureInfo.GetCultureInfo("zh-CN"));
+            CsvReader reader = new CsvReader(new StringReader("1,2,3,4,5,\"ab\"\"cd\",xx"),cc);
+            reader.Read();
+            
             foreach (string key in ConfigurationManager.AppSettings.Keys) 
             {
                 if (key.StartsWith("::") && key.EndsWith("::"))
@@ -29,9 +32,16 @@ namespace HalfAutoEmailsSender
                 }
             }
             
-            Console.Write("Drag one the Emails file:");
-            ProcessFile(Console.ReadLine());
-            Console.ReadLine();
+            ProcessFile(args[0]);
+            try
+            {
+                File.Delete(args[0]);
+            }
+            catch (Exception e) 
+            {
+                Console.WriteLine("Failed to delete email files, please deleted it manually.");
+                logger.Error("Failed to delete email files, please deleted it manually.", e);
+            }
 
         }
 
@@ -93,34 +103,62 @@ namespace HalfAutoEmailsSender
                 using (CsvReader reader = new CsvReader(new StreamReader(fullPath), config))
                 {
                     long counter = 0;
+                    reader.Read();
+                    reader.ReadHeader();
                     while (reader.Read())
                     {
+                        
 
                         counter++;
                         EmailItem item
                              = new EmailItem();
                         item.RootFile = fullPath;
                         item.PostionInFile = counter;
-                        item.From = string.IsNullOrEmpty(fromIndex) ? item.From : reader.GetField(fromIndex);
-                        item.FromName = string.IsNullOrEmpty(fromNameIndex) ? item.FromName : reader.GetField(fromNameIndex);
-                        item.IsHtmlBody = string.IsNullOrEmpty(isHtmlBodyIndex) ? item.IsHtmlBody : bool.Parse(reader.GetField(isHtmlBodyIndex));
-                        item.To = reader.GetField(toIndex);
-                        item.Subject = reader.GetField(subjectIndex);
-                        if (bodyIndex.StartsWith("~~"))
+                        try
                         {
-                            item.MailBody = File.ReadAllText(reader.GetField(bodyIndex));
-                            foreach (string key in TemplatePlaceHolders.Keys) 
+                            
+                            item.From = string.IsNullOrEmpty(fromIndex) ? item.From : reader.GetField(fromIndex);
+                            item.FromName = string.IsNullOrEmpty(fromNameIndex) ? item.FromName : reader.GetField(fromNameIndex);
+                            item.IsHtmlBody = string.IsNullOrEmpty(isHtmlBodyIndex) ? item.IsHtmlBody : bool.Parse(reader.GetField(isHtmlBodyIndex));
+                            item.To = reader.GetField(toIndex);
+                            if (subjectIndex.StartsWith("~"))
                             {
-                                item.MailBody = item.MailBody.Replace(key, reader.GetField(key));
+                                string subjectRealValue = ConfigurationManager.AppSettings[reader.GetField(subjectIndex.TrimStart('~'))];
+                                item.Subject = subjectRealValue;
                             }
-                        }
-                        else
-                        {
-                            item.MailBody = reader.GetField(bodyIndex);
-                        }
+                            else
+                            {
+                                item.Subject = reader.GetField(subjectIndex);
+                            }
 
-                        item.AttachmentPath = string.IsNullOrEmpty(attachmentPathIndex) ? null : reader.GetField(attachmentPathIndex);
-                        ProcessItemJob(item);
+                            if (bodyIndex.StartsWith("~~"))
+                            {
+                                item.MailBody = File.ReadAllText(reader.GetField(bodyIndex.TrimStart('~')));
+                            }
+                            else
+                            {
+                                item.MailBody = reader.GetField(bodyIndex);
+                            }
+                            foreach (string key in TemplatePlaceHolders.Keys)
+                            {
+                                if (reader.Context.HeaderRecord.Contains(TemplatePlaceHolders[key]))
+                                {
+                                    item.MailBody = item.MailBody.Replace(key, reader.GetField(TemplatePlaceHolders[key]));
+                                }
+
+                            }
+
+                            item.AttachmentPath = string.IsNullOrEmpty(attachmentPathIndex) ? null : reader.GetField(attachmentPathIndex);
+                            ProcessItemJob(item);
+
+                        }
+                        catch (Exception e) 
+                        {
+                            item.ProcceType = "Failed";
+                            item.ProcceMessage = e.ToString();
+                            logger.Error("Failed to create an email item {0}", e);
+                        }
+                        
                     }
                 }
             }
@@ -224,9 +262,10 @@ namespace HalfAutoEmailsSender
                 try
                 {
                     string culture = ConfigurationManager.AppSettings["DefaultCulture"];
+                    string filename = new FileInfo(this.RootFile).Name;
                     CsvConfiguration config = new CsvConfiguration(string.IsNullOrEmpty(culture) ? CultureInfo.CurrentCulture
                         : CultureInfo.GetCultureInfo(culture));
-                    using (CsvWriter writer = new CsvWriter(new StreamWriter(string.Format("{0}.report.csv", RootFile), true,
+                    using (CsvWriter writer = new CsvWriter(new StreamWriter(string.Format("{0}/{1}.report.csv", AppDomain.CurrentDomain.BaseDirectory, filename), true,
                         System.Text.Encoding.GetEncoding(this.Encoding))
                          , config))
                     {
